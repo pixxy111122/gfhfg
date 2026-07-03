@@ -231,6 +231,7 @@ if (fs.existsSync(FIREBASE_CONFIG_PATH)) {
     const shouldInitialize = !isVercel || hasCredentials;
 
     if (shouldInitialize) {
+      let appInstance;
       if (getApps().length === 0) {
         if (process.env.FIREBASE_SERVICE_ACCOUNT) {
           let serviceAccountStr = process.env.FIREBASE_SERVICE_ACCOUNT.trim();
@@ -247,20 +248,22 @@ if (fs.existsSync(FIREBASE_CONFIG_PATH)) {
           if (serviceAccount.private_key) {
             serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
           }
-          initializeApp({
+          appInstance = initializeApp({
             credential: cert(serviceAccount),
             projectId: fbConfig.projectId,
           });
         } else {
-          initializeApp({
+          appInstance = initializeApp({
             projectId: fbConfig.projectId,
           });
         }
+      } else {
+        appInstance = getApps()[0];
       }
       if (fbConfig.firestoreDatabaseId && fbConfig.firestoreDatabaseId !== '(default)') {
-        firebaseDb = getFirestore(fbConfig.firestoreDatabaseId);
+        firebaseDb = getFirestore(appInstance, fbConfig.firestoreDatabaseId);
       } else {
-        firebaseDb = getFirestore();
+        firebaseDb = getFirestore(appInstance);
       }
       console.log('[Firebase] Admin SDK initialized successfully with database ID:', fbConfig.firestoreDatabaseId || '(default)');
     } else {
@@ -283,7 +286,12 @@ function loadUsers(): UserAccount[] {
       return usersCache;
     }
     const data = fs.readFileSync(DB_FILE, 'utf-8');
-    const parsed = JSON.parse(data) as UserAccount[];
+    let parsed = JSON.parse(data) as UserAccount[];
+    if (Array.isArray(parsed)) {
+      parsed = parsed.filter(u => u && typeof u === 'object' && typeof u.phone === 'string');
+    } else {
+      parsed = [DEFAULT_ADMIN];
+    }
     
     // Ensure default admin exists in database if it got cleared
     const hasAdmin = parsed.some(u => u.phone === DEFAULT_ADMIN.phone);
@@ -302,14 +310,21 @@ function loadUsers(): UserAccount[] {
 
 function saveUsers(users: UserAccount[]): boolean {
   try {
-    usersCache = users;
-    fs.writeFileSync(DB_FILE, JSON.stringify(users, null, 2), 'utf-8');
+    const cleanUsers = (users || []).filter(u => u && typeof u === 'object' && typeof u.phone === 'string');
+    usersCache = cleanUsers;
+    fs.writeFileSync(DB_FILE, JSON.stringify(cleanUsers, null, 2), 'utf-8');
     if (firebaseDb) {
-      users.forEach(user => {
-        const cleanUser = JSON.parse(JSON.stringify(user));
-        firebaseDb.collection('users').doc(user.phone).set(cleanUser).catch((err: any) => {
-          console.error('[Firebase] Save user error:', err);
-        });
+      cleanUsers.forEach(user => {
+        if (user && user.phone) {
+          const cleanUser = JSON.parse(JSON.stringify(user));
+          try {
+            firebaseDb.collection('users').doc(user.phone).set(cleanUser).catch((err: any) => {
+              console.error('[Firebase] Save user error:', err);
+            });
+          } catch (err) {
+            console.error('[Firebase] Synchronous save user doc creation error:', err);
+          }
+        }
       });
     }
     return true;
@@ -330,7 +345,12 @@ function loadSettings(): SystemSettings {
       return settingsCache;
     }
     const data = fs.readFileSync(SETTINGS_FILE, 'utf-8');
-    settingsCache = JSON.parse(data) as SystemSettings;
+    const parsed = JSON.parse(data) as SystemSettings;
+    if (parsed && typeof parsed === 'object') {
+      settingsCache = parsed;
+    } else {
+      settingsCache = DEFAULT_SETTINGS;
+    }
     return settingsCache;
   } catch (error) {
     console.error('Settings load error:', error);
@@ -345,9 +365,13 @@ function saveSettings(settings: SystemSettings): boolean {
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf-8');
     if (firebaseDb) {
       const cleanSettings = JSON.parse(JSON.stringify(settings));
-      firebaseDb.collection('shopee_settings').doc('global').set(cleanSettings).catch((err: any) => {
-        console.error('[Firebase] Save settings error:', err);
-      });
+      try {
+        firebaseDb.collection('shopee_settings').doc('global').set(cleanSettings).catch((err: any) => {
+          console.error('[Firebase] Save settings error:', err);
+        });
+      } catch (err) {
+        console.error('[Firebase] Synchronous save settings error:', err);
+      }
     }
     return true;
   } catch (error) {
@@ -380,7 +404,13 @@ function loadTransactions(): Transaction[] {
       return transactionsCache;
     }
     const data = fs.readFileSync(TRANSACTIONS_FILE, 'utf-8');
-    transactionsCache = JSON.parse(data) as Transaction[];
+    let parsed = JSON.parse(data) as Transaction[];
+    if (Array.isArray(parsed)) {
+      parsed = parsed.filter(t => t && typeof t === 'object' && typeof t.id === 'string');
+    } else {
+      parsed = [];
+    }
+    transactionsCache = parsed;
     return transactionsCache;
   } catch (error) {
     console.error('Transactions load error:', error);
@@ -391,14 +421,21 @@ function loadTransactions(): Transaction[] {
 
 function saveTransactions(txs: Transaction[]): boolean {
   try {
-    transactionsCache = txs;
-    fs.writeFileSync(TRANSACTIONS_FILE, JSON.stringify(txs, null, 2), 'utf-8');
+    const cleanTxs = (txs || []).filter(t => t && typeof t === 'object' && typeof t.id === 'string');
+    transactionsCache = cleanTxs;
+    fs.writeFileSync(TRANSACTIONS_FILE, JSON.stringify(cleanTxs, null, 2), 'utf-8');
     if (firebaseDb) {
-      txs.forEach(tx => {
-        const cleanTx = JSON.parse(JSON.stringify(tx));
-        firebaseDb.collection('transactions').doc(tx.id).set(cleanTx).catch((err: any) => {
-          console.error('[Firebase] Save transaction error:', err);
-        });
+      cleanTxs.forEach(tx => {
+        if (tx && tx.id) {
+          const cleanTx = JSON.parse(JSON.stringify(tx));
+          try {
+            firebaseDb.collection('transactions').doc(tx.id).set(cleanTx).catch((err: any) => {
+              console.error('[Firebase] Save transaction error:', err);
+            });
+          } catch (err) {
+            console.error('[Firebase] Synchronous save transaction doc creation error:', err);
+          }
+        }
       });
     }
     return true;
@@ -499,7 +536,13 @@ function loadProducts(): any[] {
       return productsCache;
     }
     const data = fs.readFileSync(PRODUCTS_FILE, 'utf-8');
-    productsCache = JSON.parse(data);
+    let parsed = JSON.parse(data);
+    if (Array.isArray(parsed)) {
+      parsed = parsed.filter(p => p && typeof p === 'object' && typeof p.id === 'string');
+    } else {
+      parsed = [];
+    }
+    productsCache = parsed;
     return productsCache;
   } catch (err) {
     console.error('Error loading products:', err);
@@ -510,16 +553,19 @@ function loadProducts(): any[] {
 
 function saveProducts(products: any[]): boolean {
   try {
-    productsCache = products;
-    fs.writeFileSync(PRODUCTS_FILE, JSON.stringify(products, null, 2), 'utf-8');
+    const cleanProducts = (products || []).filter(p => p && typeof p === 'object' && typeof p.id === 'string');
+    productsCache = cleanProducts;
+    fs.writeFileSync(PRODUCTS_FILE, JSON.stringify(cleanProducts, null, 2), 'utf-8');
     if (firebaseDb) {
       (async () => {
-        for (const prod of products) {
-          const cleanProd = JSON.parse(JSON.stringify(prod));
-          await firebaseDb.collection('products').doc(prod.id).set(cleanProd);
+        for (const prod of cleanProducts) {
+          if (prod && prod.id) {
+            const cleanProd = JSON.parse(JSON.stringify(prod));
+            await firebaseDb.collection('products').doc(prod.id).set(cleanProd);
+          }
         }
         const snapshot = await firebaseDb.collection('products').get();
-        const currentIds = new Set(products.map(p => p.id));
+        const currentIds = new Set(cleanProducts.map(p => p.id));
         for (const docSnap of snapshot.docs) {
           if (!currentIds.has(docSnap.id)) {
             await firebaseDb.collection('products').doc(docSnap.id).delete();
@@ -586,7 +632,13 @@ function loadActivityProducts(): any[] {
       return activityProductsCache;
     }
     const data = fs.readFileSync(ACTIVITY_PRODUCTS_FILE, 'utf-8');
-    activityProductsCache = JSON.parse(data);
+    let parsed = JSON.parse(data);
+    if (Array.isArray(parsed)) {
+      parsed = parsed.filter(ap => ap && typeof ap === 'object' && typeof ap.id === 'string');
+    } else {
+      parsed = [];
+    }
+    activityProductsCache = parsed;
     return activityProductsCache;
   } catch (err) {
     console.error('Error loading activity products:', err);
@@ -606,16 +658,19 @@ function shuffleArray<T>(array: T[]): T[] {
 
 function saveActivityProducts(products: any[]): boolean {
   try {
-    activityProductsCache = products;
-    fs.writeFileSync(ACTIVITY_PRODUCTS_FILE, JSON.stringify(products, null, 2), 'utf-8');
+    const cleanProducts = (products || []).filter(ap => ap && typeof ap === 'object' && typeof ap.id === 'string');
+    activityProductsCache = cleanProducts;
+    fs.writeFileSync(ACTIVITY_PRODUCTS_FILE, JSON.stringify(cleanProducts, null, 2), 'utf-8');
     if (firebaseDb) {
       (async () => {
-        for (const prod of products) {
-          const cleanProd = JSON.parse(JSON.stringify(prod));
-          await firebaseDb.collection('activity_products').doc(prod.id).set(cleanProd);
+        for (const prod of cleanProducts) {
+          if (prod && prod.id) {
+            const cleanProd = JSON.parse(JSON.stringify(prod));
+            await firebaseDb.collection('activity_products').doc(prod.id).set(cleanProd);
+          }
         }
         const snapshot = await firebaseDb.collection('activity_products').get();
-        const currentIds = new Set(products.map(p => p.id));
+        const currentIds = new Set(cleanProducts.map(p => p.id));
         for (const docSnap of snapshot.docs) {
           if (!currentIds.has(docSnap.id)) {
             await firebaseDb.collection('activity_products').doc(docSnap.id).delete();
@@ -642,7 +697,13 @@ function loadMatchRequests(): MatchRequest[] {
       return matchRequestsCache;
     }
     const data = fs.readFileSync(MATCH_REQUESTS_FILE, 'utf-8');
-    matchRequestsCache = JSON.parse(data);
+    let parsed = JSON.parse(data);
+    if (Array.isArray(parsed)) {
+      parsed = parsed.filter(mr => mr && typeof mr === 'object' && typeof mr.phone === 'string');
+    } else {
+      parsed = [];
+    }
+    matchRequestsCache = parsed;
     return matchRequestsCache;
   } catch (err) {
     console.error('Error loading match requests:', err);
@@ -653,16 +714,19 @@ function loadMatchRequests(): MatchRequest[] {
 
 function saveMatchRequests(requests: MatchRequest[]): boolean {
   try {
-    matchRequestsCache = requests;
-    fs.writeFileSync(MATCH_REQUESTS_FILE, JSON.stringify(requests, null, 2), 'utf-8');
+    const cleanRequests = (requests || []).filter(r => r && typeof r === 'object' && typeof r.phone === 'string');
+    matchRequestsCache = cleanRequests;
+    fs.writeFileSync(MATCH_REQUESTS_FILE, JSON.stringify(cleanRequests, null, 2), 'utf-8');
     if (firebaseDb) {
       (async () => {
-        for (const req of requests) {
-          const cleanReq = JSON.parse(JSON.stringify(req));
-          await firebaseDb.collection('match_requests').doc(req.phone).set(cleanReq);
+        for (const req of cleanRequests) {
+          if (req && req.phone) {
+            const cleanReq = JSON.parse(JSON.stringify(req));
+            await firebaseDb.collection('match_requests').doc(req.phone).set(cleanReq);
+          }
         }
         const snapshot = await firebaseDb.collection('match_requests').get();
-        const currentPhones = new Set(requests.map(r => r.phone));
+        const currentPhones = new Set(cleanRequests.map(r => r.phone));
         for (const docSnap of snapshot.docs) {
           if (!currentPhones.has(docSnap.id)) {
             await firebaseDb.collection('match_requests').doc(docSnap.id).delete();
@@ -720,8 +784,19 @@ app.post('/api/upload', (req, res) => {
 // --- BACKEND API ROUTES ---
 
 // Settings Endpoints
-app.get('/api/settings', (req, res) => {
+app.get('/api/settings', async (req, res) => {
   settingsCache = loadSettings();
+  if (firebaseDb && (!settingsCache || settingsCache.siteName === 'Shopee')) {
+    try {
+      const doc = await firebaseDb.collection('shopee_settings').doc('global').get();
+      if (doc.exists) {
+        settingsCache = doc.data() as SystemSettings;
+        fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settingsCache, null, 2), 'utf-8');
+      }
+    } catch (err) {
+      console.error('[Firebase] Direct settings fetch failed:', err);
+    }
+  }
   res.json(settingsCache);
 });
 
@@ -790,8 +865,24 @@ app.post('/api/settings', (req, res) => {
 });
 
 // --- HOME PRODUCTS ENDPOINTS ---
-app.get('/api/products', (req, res) => {
-  const products = loadProducts();
+app.get('/api/products', async (req, res) => {
+  let products = loadProducts();
+  if (firebaseDb && (!products || products.length === 0)) {
+    try {
+      const snapshot = await firebaseDb.collection('products').get();
+      if (!snapshot.empty) {
+        const fbProds: any[] = [];
+        snapshot.forEach((doc: any) => {
+          fbProds.push(doc.data());
+        });
+        products = fbProds;
+        productsCache = fbProds;
+        fs.writeFileSync(PRODUCTS_FILE, JSON.stringify(fbProds, null, 2), 'utf-8');
+      }
+    } catch (err) {
+      console.error('[Firebase] Direct products fetch failed:', err);
+    }
+  }
   // Return reversed to ensure newly added products appear at the top permanently in a stable order
   res.json([...products].reverse());
 });
@@ -877,8 +968,24 @@ app.post('/api/admin/products/delete', (req, res) => {
 
 
 // --- ACTIVITY PRODUCTS ENDPOINTS ---
-app.get('/api/activity-products', (req, res) => {
-  const products = loadActivityProducts();
+app.get('/api/activity-products', async (req, res) => {
+  let products = loadActivityProducts();
+  if (firebaseDb && (!products || products.length === 0)) {
+    try {
+      const snapshot = await firebaseDb.collection('activity_products').get();
+      if (!snapshot.empty) {
+        const fbProds: any[] = [];
+        snapshot.forEach((doc: any) => {
+          fbProds.push(doc.data());
+        });
+        products = fbProds;
+        activityProductsCache = fbProds;
+        fs.writeFileSync(ACTIVITY_PRODUCTS_FILE, JSON.stringify(fbProds, null, 2), 'utf-8');
+      }
+    } catch (err) {
+      console.error('[Firebase] Direct activity products fetch failed:', err);
+    }
+  }
   // Return reversed to ensure newly added products appear at the top permanently in stable order
   res.json([...products].reverse());
 });
@@ -1045,13 +1152,27 @@ app.post('/api/order/match-complete', (req, res) => {
 
 
 // Profile sync endpoint
-app.get('/api/users/profile', (req, res) => {
+app.get('/api/users/profile', async (req, res) => {
   const { phone } = req.query;
   if (!phone) {
     return res.status(400).json({ error: 'กรุณาระบุเบอร์โทรศัพท์' });
   }
   usersCache = loadUsers();
-  const user = usersCache.find(u => u.phone === phone);
+  let user = usersCache.find(u => u.phone === phone);
+  if (!user && firebaseDb) {
+    try {
+      const doc = await firebaseDb.collection('users').doc(phone as string).get();
+      if (doc.exists) {
+        user = doc.data() as UserAccount;
+        if (!usersCache.some(u => u.phone === phone)) {
+          usersCache.push(user);
+          fs.writeFileSync(DB_FILE, JSON.stringify(usersCache, null, 2), 'utf-8');
+        }
+      }
+    } catch (err) {
+      console.error('[Firebase] Direct profile fetch failed:', err);
+    }
+  }
   if (!user) {
     return res.status(404).json({ error: 'ไม่พบบัญชีผู้ใช้งาน' });
   }
@@ -1060,7 +1181,7 @@ app.get('/api/users/profile', (req, res) => {
 });
 
 // 1. User Login Route
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   const { phone, password } = req.body;
 
   if (!phone || !password) {
@@ -1069,7 +1190,22 @@ app.post('/api/auth/login', (req, res) => {
 
   // Refresh cache
   usersCache = loadUsers();
-  const user = usersCache.find(u => u.phone === phone);
+  let user = usersCache.find(u => u.phone === phone);
+
+  if (!user && firebaseDb) {
+    try {
+      const doc = await firebaseDb.collection('users').doc(phone).get();
+      if (doc.exists) {
+        user = doc.data() as UserAccount;
+        if (!usersCache.some(u => u.phone === phone)) {
+          usersCache.push(user);
+          fs.writeFileSync(DB_FILE, JSON.stringify(usersCache, null, 2), 'utf-8');
+        }
+      }
+    } catch (err) {
+      console.error('[Firebase] Direct login fetch failed:', err);
+    }
+  }
 
   if (!user) {
     return res.status(401).json({ error: 'ไม่พบบัญชีผู้ใช้งานนี้ในระบบหลังบ้านค่ะ' });
