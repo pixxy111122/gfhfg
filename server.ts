@@ -266,6 +266,36 @@ if (fs.existsSync(FIREBASE_CONFIG_PATH)) {
         firebaseDb = getFirestore(appInstance);
       }
       console.log('[Firebase] Admin SDK initialized successfully with database ID:', fbConfig.firestoreDatabaseId || '(default)');
+
+      // Verify database connectivity and permission access. If we get a PERMISSION_DENIED error
+      // due to named database IAM restrictions, we automatically attempt fallback to the (default) database.
+      if (firebaseDb) {
+        (async () => {
+          try {
+            console.log('[Firebase] Verifying database connectivity & permissions...');
+            await firebaseDb.collection('shopee_settings').doc('global').get();
+            console.log('[Firebase] Connection and permissions test successful.');
+          } catch (testErr: any) {
+            console.warn('[Firebase] Connection test failed with database:', fbConfig.firestoreDatabaseId || '(default)', 'Error:', testErr.message || testErr);
+            if (fbConfig.firestoreDatabaseId && fbConfig.firestoreDatabaseId !== '(default)') {
+              console.log('[Firebase] Attempting automatic fallback to the (default) database...');
+              try {
+                const fallbackDb = getFirestore(appInstance);
+                await fallbackDb.collection('shopee_settings').doc('global').get();
+                firebaseDb = fallbackDb;
+                console.log('[Firebase] Fallback to (default) database successful!');
+              } catch (fallbackErr: any) {
+                console.error('[Firebase] Fallback to (default) database failed:', fallbackErr.message || fallbackErr);
+                console.log('[Firebase] Falling back entirely to local JSON database storage.');
+                firebaseDb = null;
+              }
+            } else {
+              console.log('[Firebase] Falling back entirely to local JSON database storage.');
+              firebaseDb = null;
+            }
+          }
+        })();
+      }
     } else {
       console.log('[Firebase] Skipping Admin SDK initialization on Vercel due to missing service account credentials. Falling back to local JSON database.');
     }
