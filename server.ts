@@ -316,7 +316,7 @@ function saveUsers(users: UserAccount[]): boolean {
     const cleanUsers = (users || []).filter(u => u && typeof u === 'object' && typeof u.phone === 'string');
     usersCache = cleanUsers;
     fs.writeFileSync(DB_FILE, JSON.stringify(cleanUsers, null, 2), 'utf-8');
-    if (firebaseDb) {
+    if (firebaseDb && isFirebaseReady) {
       cleanUsers.forEach(user => {
         if (user && user.phone) {
           const cleanUser = JSON.parse(JSON.stringify(user));
@@ -366,7 +366,7 @@ function saveSettings(settings: SystemSettings): boolean {
   try {
     settingsCache = settings;
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf-8');
-    if (firebaseDb) {
+    if (firebaseDb && isFirebaseReady) {
       const cleanSettings = JSON.parse(JSON.stringify(settings));
       try {
         firebaseDb.collection('shopee_settings').doc('global').set(cleanSettings).catch((err: any) => {
@@ -427,7 +427,7 @@ function saveTransactions(txs: Transaction[]): boolean {
     const cleanTxs = (txs || []).filter(t => t && typeof t === 'object' && typeof t.id === 'string');
     transactionsCache = cleanTxs;
     fs.writeFileSync(TRANSACTIONS_FILE, JSON.stringify(cleanTxs, null, 2), 'utf-8');
-    if (firebaseDb) {
+    if (firebaseDb && isFirebaseReady) {
       cleanTxs.forEach(tx => {
         if (tx && tx.id) {
           const cleanTx = JSON.parse(JSON.stringify(tx));
@@ -559,7 +559,7 @@ function saveProducts(products: any[]): boolean {
     const cleanProducts = (products || []).filter(p => p && typeof p === 'object' && typeof p.id === 'string');
     productsCache = cleanProducts;
     fs.writeFileSync(PRODUCTS_FILE, JSON.stringify(cleanProducts, null, 2), 'utf-8');
-    if (firebaseDb) {
+    if (firebaseDb && isFirebaseReady) {
       (async () => {
         for (const prod of cleanProducts) {
           if (prod && prod.id) {
@@ -664,7 +664,7 @@ function saveActivityProducts(products: any[]): boolean {
     const cleanProducts = (products || []).filter(ap => ap && typeof ap === 'object' && typeof ap.id === 'string');
     activityProductsCache = cleanProducts;
     fs.writeFileSync(ACTIVITY_PRODUCTS_FILE, JSON.stringify(cleanProducts, null, 2), 'utf-8');
-    if (firebaseDb) {
+    if (firebaseDb && isFirebaseReady) {
       (async () => {
         for (const prod of cleanProducts) {
           if (prod && prod.id) {
@@ -720,7 +720,7 @@ function saveMatchRequests(requests: MatchRequest[]): boolean {
     const cleanRequests = (requests || []).filter(r => r && typeof r === 'object' && typeof r.phone === 'string');
     matchRequestsCache = cleanRequests;
     fs.writeFileSync(MATCH_REQUESTS_FILE, JSON.stringify(cleanRequests, null, 2), 'utf-8');
-    if (firebaseDb) {
+    if (firebaseDb && isFirebaseReady) {
       (async () => {
         for (const req of cleanRequests) {
           if (req && req.phone) {
@@ -1296,7 +1296,7 @@ app.post('/api/auth/register', (req, res) => {
   if (matchedTxs.length > 0) {
     txs = txs.filter(t => t.phone !== phone);
     saveTransactions(txs);
-    if (firebaseDb) {
+    if (firebaseDb && isFirebaseReady) {
       matchedTxs.forEach(tx => {
         firebaseDb.collection('transactions').doc(tx.id).delete().catch((err: any) => {
           console.error('[Firebase] Error deleting old tx from Firestore during registration:', err);
@@ -1310,7 +1310,7 @@ app.post('/api/auth/register', (req, res) => {
   if (matchedReqs.length > 0) {
     matches = matches.filter(m => m.phone !== phone);
     saveMatchRequests(matches);
-    if (firebaseDb) {
+    if (firebaseDb && isFirebaseReady) {
       firebaseDb.collection('match_requests').doc(phone).delete().catch((err: any) => {
         console.error('[Firebase] Error deleting old match request from Firestore during registration:', err);
       });
