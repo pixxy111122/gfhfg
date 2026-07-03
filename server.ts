@@ -220,10 +220,14 @@ const DEFAULT_ADMIN: UserAccount = {
 // --- FIREBASE INITIALIZATION ---
 const FIREBASE_CONFIG_PATH = path.join(process.cwd(), 'firebase-applet-config.json');
 let firebaseDb: any = null;
+let isFirebaseReady = false;
+let firebaseAppInstance: any = null;
+let firebaseConfig: any = null;
 
 if (fs.existsSync(FIREBASE_CONFIG_PATH)) {
   try {
-    const fbConfig = JSON.parse(fs.readFileSync(FIREBASE_CONFIG_PATH, 'utf8'));
+    firebaseConfig = JSON.parse(fs.readFileSync(FIREBASE_CONFIG_PATH, 'utf8'));
+    const fbConfig = firebaseConfig;
     
     // We only initialize Firebase Admin on Vercel/Serverless if credentials are explicitly provided.
     // Otherwise, on GCP / Cloud Run, we can initialize it because it will use Application Default Credentials.
@@ -231,7 +235,6 @@ if (fs.existsSync(FIREBASE_CONFIG_PATH)) {
     const shouldInitialize = !isVercel || hasCredentials;
 
     if (shouldInitialize) {
-      let appInstance;
       if (getApps().length === 0) {
         if (process.env.FIREBASE_SERVICE_ACCOUNT) {
           let serviceAccountStr = process.env.FIREBASE_SERVICE_ACCOUNT.trim();
@@ -248,54 +251,24 @@ if (fs.existsSync(FIREBASE_CONFIG_PATH)) {
           if (serviceAccount.private_key) {
             serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
           }
-          appInstance = initializeApp({
+          firebaseAppInstance = initializeApp({
             credential: cert(serviceAccount),
             projectId: fbConfig.projectId,
           });
         } else {
-          appInstance = initializeApp({
+          firebaseAppInstance = initializeApp({
             projectId: fbConfig.projectId,
           });
         }
       } else {
-        appInstance = getApps()[0];
+        firebaseAppInstance = getApps()[0];
       }
       if (fbConfig.firestoreDatabaseId && fbConfig.firestoreDatabaseId !== '(default)') {
-        firebaseDb = getFirestore(appInstance, fbConfig.firestoreDatabaseId);
+        firebaseDb = getFirestore(firebaseAppInstance, fbConfig.firestoreDatabaseId);
       } else {
-        firebaseDb = getFirestore(appInstance);
+        firebaseDb = getFirestore(firebaseAppInstance);
       }
-      console.log('[Firebase] Admin SDK initialized successfully with database ID:', fbConfig.firestoreDatabaseId || '(default)');
-
-      // Verify database connectivity and permission access. If we get a PERMISSION_DENIED error
-      // due to named database IAM restrictions, we automatically attempt fallback to the (default) database.
-      if (firebaseDb) {
-        (async () => {
-          try {
-            console.log('[Firebase] Verifying database connectivity & permissions...');
-            await firebaseDb.collection('shopee_settings').doc('global').get();
-            console.log('[Firebase] Connection and permissions test successful.');
-          } catch (testErr: any) {
-            console.warn('[Firebase] Connection test failed with database:', fbConfig.firestoreDatabaseId || '(default)', 'Error:', testErr.message || testErr);
-            if (fbConfig.firestoreDatabaseId && fbConfig.firestoreDatabaseId !== '(default)') {
-              console.log('[Firebase] Attempting automatic fallback to the (default) database...');
-              try {
-                const fallbackDb = getFirestore(appInstance);
-                await fallbackDb.collection('shopee_settings').doc('global').get();
-                firebaseDb = fallbackDb;
-                console.log('[Firebase] Fallback to (default) database successful!');
-              } catch (fallbackErr: any) {
-                console.error('[Firebase] Fallback to (default) database failed:', fallbackErr.message || fallbackErr);
-                console.log('[Firebase] Falling back entirely to local JSON database storage.');
-                firebaseDb = null;
-              }
-            } else {
-              console.log('[Firebase] Falling back entirely to local JSON database storage.');
-              firebaseDb = null;
-            }
-          }
-        })();
-      }
+      console.log('[Firebase] Admin SDK initialized with database ID:', fbConfig.firestoreDatabaseId || '(default)');
     } else {
       console.log('[Firebase] Skipping Admin SDK initialization on Vercel due to missing service account credentials. Falling back to local JSON database.');
     }
@@ -816,7 +789,7 @@ app.post('/api/upload', (req, res) => {
 // Settings Endpoints
 app.get('/api/settings', async (req, res) => {
   settingsCache = loadSettings();
-  if (firebaseDb && (!settingsCache || settingsCache.siteName === 'Shopee')) {
+  if (firebaseDb && isFirebaseReady && (!settingsCache || settingsCache.siteName === 'Shopee')) {
     try {
       const doc = await firebaseDb.collection('shopee_settings').doc('global').get();
       if (doc.exists) {
@@ -897,7 +870,7 @@ app.post('/api/settings', (req, res) => {
 // --- HOME PRODUCTS ENDPOINTS ---
 app.get('/api/products', async (req, res) => {
   let products = loadProducts();
-  if (firebaseDb && (!products || products.length === 0)) {
+  if (firebaseDb && isFirebaseReady && (!products || products.length === 0)) {
     try {
       const snapshot = await firebaseDb.collection('products').get();
       if (!snapshot.empty) {
@@ -1000,7 +973,7 @@ app.post('/api/admin/products/delete', (req, res) => {
 // --- ACTIVITY PRODUCTS ENDPOINTS ---
 app.get('/api/activity-products', async (req, res) => {
   let products = loadActivityProducts();
-  if (firebaseDb && (!products || products.length === 0)) {
+  if (firebaseDb && isFirebaseReady && (!products || products.length === 0)) {
     try {
       const snapshot = await firebaseDb.collection('activity_products').get();
       if (!snapshot.empty) {
@@ -1189,7 +1162,7 @@ app.get('/api/users/profile', async (req, res) => {
   }
   usersCache = loadUsers();
   let user = usersCache.find(u => u.phone === phone);
-  if (!user && firebaseDb) {
+  if (!user && firebaseDb && isFirebaseReady) {
     try {
       const doc = await firebaseDb.collection('users').doc(phone as string).get();
       if (doc.exists) {
@@ -1222,7 +1195,7 @@ app.post('/api/auth/login', async (req, res) => {
   usersCache = loadUsers();
   let user = usersCache.find(u => u.phone === phone);
 
-  if (!user && firebaseDb) {
+  if (!user && firebaseDb && isFirebaseReady) {
     try {
       const doc = await firebaseDb.collection('users').doc(phone).get();
       if (doc.exists) {
@@ -1886,6 +1859,45 @@ async function syncFromFirestoreOnStartup() {
     console.log('[Firebase] Skipping startup sync (Firebase not initialized).');
     return;
   }
+  
+  console.log('[Firebase] Verifying database connectivity & permissions...');
+  try {
+    // Attempt a quick, low-cost check on the settings collection
+    await withTimeout(
+      firebaseDb.collection('shopee_settings').doc('global').get(),
+      4000,
+      'Firestore connection check'
+    );
+    isFirebaseReady = true;
+    console.log('[Firebase] Connection and permissions test successful.');
+  } catch (testErr: any) {
+    console.log('[Firebase] Named database connection check failed. Falling back.');
+    if (firebaseConfig && firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)') {
+      console.log('[Firebase] Attempting automatic fallback to the (default) database...');
+      try {
+        const fallbackDb = getFirestore(firebaseAppInstance);
+        await withTimeout(
+          fallbackDb.collection('shopee_settings').doc('global').get(),
+          4000,
+          'Firestore fallback connection check'
+        );
+        firebaseDb = fallbackDb;
+        isFirebaseReady = true;
+        console.log('[Firebase] Fallback to (default) database successful!');
+      } catch (fallbackErr: any) {
+        console.log('[Firebase] Fallback to (default) database also failed. Falling back entirely to local storage.');
+        firebaseDb = null;
+        isFirebaseReady = false;
+        return;
+      }
+    } else {
+      console.log('[Firebase] Falling back entirely to local JSON database storage.');
+      firebaseDb = null;
+      isFirebaseReady = false;
+      return;
+    }
+  }
+
   console.log('[Firebase] Starting database synchronization from Cloud Firestore in parallel...');
   try {
     const tasks = [
